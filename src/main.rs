@@ -2,7 +2,6 @@ use std::{collections::HashMap, convert::TryInto};
 
 use anyhow::Result;
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpStream}};
-
 type ServerProxyMap = HashMap<String, (String, u16)>;
 
 #[tokio::main]
@@ -53,18 +52,30 @@ async fn proxy_socket(mut socket: TcpStream, config: &ServerProxyMap) -> Result<
         2 => false,
         _ => panic!("client sent invalid data for desired state"),
     };
-    println!("{}",hostname);
-    let target = config.get(&hostname).ok_or_else(|| anyhow::anyhow!("Host not in proxy table"))?;
-    let mut server_socket = TcpStream::connect(target).await?;
-    let mut handshake_buf = vec![];
-    write_varint(&mut handshake_buf, 0_i32).await?;
-    write_varint(&mut handshake_buf, protocol_version).await?;
-    write_string(&mut handshake_buf, target.0.as_str()).await?;
-    write_bigendian_u16(&mut handshake_buf, target.1).await?;
-    write_varint(&mut handshake_buf, if is_serverlistping { 1 } else { 2 }).await?;
-    write_varint(&mut server_socket, handshake_buf.len().try_into()?).await?;
-    server_socket.write_all(handshake_buf.as_slice()).await?;
-    tokio::io::copy_bidirectional(&mut socket, &mut server_socket).await?;
+    //println!("{}",hostname);
+    match config.get(&hostname) {
+        Some(target) => {
+            let mut server_socket = TcpStream::connect(target).await?;
+            let mut handshake_buf = vec![];
+            write_varint(&mut handshake_buf, 0_i32).await?;
+            write_varint(&mut handshake_buf, protocol_version).await?;
+            write_string(&mut handshake_buf, target.0.as_str()).await?;
+            write_bigendian_u16(&mut handshake_buf, target.1).await?;
+            write_varint(&mut handshake_buf, if is_serverlistping { 1 } else { 2 }).await?;
+            write_varint(&mut server_socket, handshake_buf.len().try_into()?).await?;
+            server_socket.write_all(handshake_buf.as_slice()).await?;
+            tokio::io::copy_bidirectional(&mut socket, &mut server_socket).await?;
+        }
+        None => {
+            if !is_serverlistping {
+                let mut goodbye_buf = vec![];
+                write_varint(&mut goodbye_buf, 0_i32).await?;
+                write_string(&mut goodbye_buf, format!("{{\"text\":\"Host {} not in proxy config\"}}", hostname).as_str()).await?;
+                write_varint(&mut socket, goodbye_buf.len().try_into()?).await?;
+                socket.write_all(goodbye_buf.as_slice()).await?;
+            }
+        }
+    };
     //println!("Successfully closed connection");
     Ok(())
 }
